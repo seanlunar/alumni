@@ -1,4 +1,5 @@
-# PHP stage
+
+# PHP 8.5 FPM Alpine
 FROM php:8.5-fpm-alpine
 
 WORKDIR /var/www/html
@@ -6,18 +7,28 @@ WORKDIR /var/www/html
 # Install system dependencies
 RUN apk add --no-cache \
     curl \
-    libpng-dev \
-    oniguruma-dev \
-    libxml2-dev \
+    git \
     zip \
     unzip \
-    git \
+    libpng-dev \
+    libjpeg-turbo-dev \
+    freetype-dev \
+    libwebp-dev \
+    oniguruma-dev \
+    libxml2-dev \
     postgresql-dev \
     nodejs \
     npm
 
+# Configure GD
+RUN docker-php-ext-configure gd \
+    --with-freetype \
+    --with-jpeg \
+    --with-webp
+
 # Install PHP extensions
-RUN docker-php-ext-install -j$(nproc) \
+# Parallel compilation disabled for reliability
+RUN docker-php-ext-install \
     pdo \
     pdo_pgsql \
     mbstring \
@@ -28,29 +39,38 @@ RUN docker-php-ext-install -j$(nproc) \
     opcache
 
 # Install Composer
-COPY --from=composer:latest /usr/bin/composer /usr/bin/composer
+COPY --from=composer:2 /usr/bin/composer /usr/bin/composer
 
 # Copy application
 COPY . .
 
 # Install PHP dependencies
-RUN composer install --no-dev --no-interaction --prefer-dist --optimize-autoloader
+RUN composer install \
+    --no-dev \
+    --no-interaction \
+    --prefer-dist \
+    --optimize-autoloader
 
-# Install frontend dependencies and build
+# Install pnpm and build frontend
 RUN npm install -g pnpm && \
-    pnpm install --ignore-scripts && \
+    pnpm install --frozen-lockfile && \
     pnpm run build
 
-# Set permissions
-RUN chown -R www-data:www-data /var/www/html && \
-    chmod -R 755 /var/www/html/storage && \
-    chmod -R 755 /var/www/html/bootstrap/cache
+# Set Laravel permissions
+RUN mkdir -p storage bootstrap/cache && \
+    chown -R www-data:www-data storage bootstrap/cache && \
+    chmod -R 775 storage bootstrap/cache
 
-# Expose port
+# PHP OPcache production settings
+RUN { \
+    echo "opcache.enable=1"; \
+    echo "opcache.enable_cli=0"; \
+    echo "opcache.memory_consumption=256"; \
+    echo "opcache.interned_strings_buffer=16"; \
+    echo "opcache.max_accelerated_files=20000"; \
+    echo "opcache.validate_timestamps=0"; \
+} > /usr/local/etc/php/conf.d/opcache.ini
+
 EXPOSE 9000
-
-# Health check
-HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
-    CMD curl -f http://localhost:9000/ping || exit 1
 
 CMD ["php-fpm"]
